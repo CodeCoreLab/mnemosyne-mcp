@@ -2,6 +2,11 @@
 
 > AI Agent 记忆管理 MCP Server — 三级记忆 · 时间衰减 · 语义检索 · 知识图谱
 
+[![CI](https://github.com/CodeCoreLab/mnemosyne-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/CodeCoreLab/mnemosyne-mcp/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/mnemosyne-mcp)](https://pypi.org/project/mnemosyne-mcp/)
+[![License](https://img.shields.io/badge/License-Apache--2.0-blue)](./LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+
 为 Claude Desktop / Cursor / Windsurf 等 MCP 客户端提供结构化记忆能力。基于 [Mnemosyne](https://github.com/mem0ai/mem0) 架构设计，走**本地优先、SQLite + 知识图谱**路线。
 
 ```
