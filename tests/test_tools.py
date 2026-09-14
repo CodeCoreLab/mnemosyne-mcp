@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from mnemosyne_mcp.client import MnemosyneClient
-from mnemosyne_mcp.server import _dispatch
+from mnemosyne_mcp.core import MnemosyneClient
+from mnemosyne_mcp.core import _dispatch
 
 
 @pytest.fixture
@@ -39,6 +39,17 @@ class TestDispatch:
     def test_stats_tool(self, client: MnemosyneClient):
         result = _dispatch(client, "mnemosyne_stats", {})
         assert "working_count" in result
+
+    def test_hygiene_clean_tool(self, client: MnemosyneClient):
+        mid = client.remember("low importance", importance=0.1)
+        audited = client.hygiene_audit(limit=5)
+        import json
+        result = _dispatch(client, "mnemosyne_hygiene_clean", {
+            "candidates_json": json.dumps(audited),
+            "action": "delete",
+            "confirm": True,
+        })
+        assert result["status"] == "deleted"
 
     def test_unknown_tool(self, client: MnemosyneClient):
         result = _dispatch(client, "nonexistent_tool", {})

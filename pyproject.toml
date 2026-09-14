@@ -39,7 +39,7 @@ embeddings = [
 ]
 
 [project.scripts]
-mnemosyne-mcp = "mnemosyne_mcp.server:main"
+mnemosyne-mcp = "mnemosyne_mcp.core:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

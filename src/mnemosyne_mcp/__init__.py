@@ -12,8 +12,7 @@ mnemosyne-mcp — AI 记忆管理 MCP Server
     mem_id = client.remember("用户偏好 Python", importance=0.9)
 """
 
-from mnemosyne_mcp.client import MnemosyneClient, MemoryRecord, GraphEdge
-from mnemosyne_mcp.server import create_server
+from mnemosyne_mcp.core import MnemosyneClient, MemoryRecord, GraphEdge, create_server
 
 __all__ = [
     "MnemosyneClient",
@@ -22,4 +21,4 @@ __all__ = [
     "create_server",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

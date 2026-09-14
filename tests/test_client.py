@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from mnemosyne_mcp.client import MnemosyneClient
+from mnemosyne_mcp.core import MnemosyneClient
 
 
 @pytest.fixture
@@ -33,6 +33,12 @@ class TestMemoryCRUD:
         # 按评分降序
         scores = [r["_score"] for r in results]
         assert scores == sorted(scores, reverse=True)
+
+    def test_recall_scoring_prefers_relevant(self, client: MnemosyneClient):
+        client.remember("Python 异步编程 asyncio 最佳实践", importance=0.5)
+        client.remember("买菜做饭日常生活记录", importance=0.9)
+        results = client.recall("Python 编程", limit=2)
+        assert results[0]["content"] == "Python 异步编程 asyncio 最佳实践"
 
     def test_update(self, client: MnemosyneClient):
         mid = client.remember("original")
@@ -101,6 +107,21 @@ class TestMemoryManagement:
         client.remember("x", importance=0.1)  # 低重要性
         candidates = client.hygiene_audit(limit=10)
         assert isinstance(candidates, list)
+
+    def test_hygiene_clean_dry_run(self, client: MnemosyneClient):
+        result = client.hygiene_clean([{"id": "x", "score": 0.8}], action="delete", confirm=False)
+        assert result["status"] == "dry-run ok"
+
+    def test_hygiene_clean_delete(self, client: MnemosyneClient):
+        mid = client.remember("to clean", importance=0.1)
+        result = client.hygiene_clean([{"id": mid, "score": 0.8}], action="delete", confirm=True)
+        assert result["status"] == "deleted"
+        assert client.get(mid) is None
+
+    def test_sleep_consolidates(self, client: MnemosyneClient):
+        client.remember("session memory", importance=0.1, scope="session")
+        result = client.sleep(force=True, dry_run=False)
+        assert "session_consolidated" in result
 
     def test_stats(self, client: MnemosyneClient):
         client.remember("test")
