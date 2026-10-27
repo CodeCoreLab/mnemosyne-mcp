@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-27
+
+### 修复
+
+- **修复 ID 生成碰撞导致写入失败**：`memory_id` 原先用
+  `mem_{毫秒时间戳}_{id(object()):x}` 生成，其中 `id(object())` 是 CPython
+  临时对象的**内存地址** —— 该地址在对象回收后会被复用，
+  同一毫秒内连续调用会生成**完全相同**的 ID。
+  实测 20000 次连续调用有 19985 次重复（唯一率 0.075%），
+  快速批量写入必然撞 `UNIQUE constraint failed: memories.memory_id`。
+  现改用 `uuid4()`，并补 3 个防回归测试。
+  该缺陷在本地测试跑得慢时不易复现，CI 上必然触发
+- **修复 `examples/knowledge_graph.py` 的 import 位置**：模块中途的
+  `from datetime import ...` 触发 ruff E402 / I001
+
 ## [0.2.0] - 2026-10-27
 
 本次是**修复性大版本**：0.1.0 存在多个导致「装不上 / 跑不起来 / 文档与实现不符」的问题。

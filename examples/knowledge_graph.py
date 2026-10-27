@@ -1,5 +1,7 @@
 """mnemosyne-mcp 知识图谱高级示例。"""
 
+from datetime import datetime, timedelta
+
 from mnemosyne_mcp import MnemosyneClient
 
 client = MnemosyneClient(path="./demo_graph.db")
@@ -50,7 +52,6 @@ for e in edges[:5]:
     print(f"  [{e['relationship']}] {e['from'][:16]} -> {e['to'][:16]} (hops={e['hops']})")
 
 # 历史回溯查询
-from datetime import datetime, timedelta
 yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 # 假设 valid_until 是昨天，可以查到当时有效的三元组
 old_triples = client.triple_query(subject="AWS", as_of=yesterday)

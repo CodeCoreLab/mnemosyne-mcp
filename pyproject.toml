@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mnemosyne-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "AI 记忆管理 MCP Server — 三级记忆、时间衰减、语义检索、知识图谱"
 readme = "README.md"
 # PEP 639 写法：字符串 SPDX 标识 + 指向仓库内的许可证全文。
