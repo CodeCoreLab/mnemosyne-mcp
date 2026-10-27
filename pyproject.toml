@@ -1,20 +1,24 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "mnemosyne-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI 记忆管理 MCP Server — 三级记忆、时间衰减、语义检索、知识图谱"
 readme = "README.md"
-license = { text = "Apache-2.0" }
+# PEP 639 写法：字符串 SPDX 标识 + 指向仓库内的许可证全文。
+# 旧的 license = { text = ... } 已被 setuptools>=77 弃用。
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
-authors = [{ name = "Codex Haha", email = "codex@example.com" }]
+authors = [{ name = "CodeCoreLab" }]
 keywords = ["mcp", "memory", "ai-agent", "semantic-search", "knowledge-graph"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
+    # 不声明 "License :: OSI Approved :: Apache Software License" ——
+    # PEP 639 规定与 license 表达式重复时 setuptools 会抛 InvalidConfigError。
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -22,9 +26,11 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "mnemosyne>=3.15.0",
+    # 只保留实际使用的依赖。
+    # 原先声明的 mnemosyne>=3.15.0 有两个问题：
+    #   1. PyPI 上 mnemosyne 最高只有 0.1.0，该约束永远无法满足 → 安装必失败
+    #   2. 本项目是纯 SQLite 实现，从未 import 过 mnemosyne
     "mcp>=1.0.0",
-    "sqlite-vec>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -34,12 +40,27 @@ dev = [
     "ruff>=0.6",
 ]
 embeddings = [
+    # 向量检索为规划中能力，当前实现是纯 SQLite BM25，未使用这两个包
     "sentence-transformers>=3.0",
     "torch>=2.0",
+]
+sse = [
+    # SSE 传输需要额外的 Web 栈
+    "starlette>=0.37",
+    "uvicorn>=0.30",
+]
+sqlite-vec = [
+    "sqlite-vec>=0.1.0",
 ]
 
 [project.scripts]
 mnemosyne-mcp = "mnemosyne_mcp.core:main"
+
+[project.urls]
+Homepage = "https://github.com/CodeCoreLab/mnemosyne-mcp"
+Repository = "https://github.com/CodeCoreLab/mnemosyne-mcp"
+Issues = "https://github.com/CodeCoreLab/mnemosyne-mcp/issues"
+Changelog = "https://github.com/CodeCoreLab/mnemosyne-mcp/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -47,6 +68,19 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+# 显式锁定规则集：ruff 默认规则集随版本变化，不锁定则 CI 会出现
+# "今天绿、升个 ruff 就红"的版本漂移。
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM", "RUF"]
+ignore = [
+    "E501",
+    "B008",
+    "SIM108",
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

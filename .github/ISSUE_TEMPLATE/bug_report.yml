@@ -1,0 +1,88 @@
+name: Bug 反馈
+description: 报告一个可复现的缺陷
+title: "[Bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请先确认这个缺陷在最新版本上仍然存在。
+
+        **安全漏洞请勿在此报告**，见 [SECURITY.md](../SECURITY.md) 的私下报告流程。
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 发布版本号或 commit SHA
+      placeholder: v0.2.0 / a1b2c3d
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python 版本
+      placeholder: 3.12.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 受影响模块
+      options:
+        - 记忆 CRUD（remember / recall / get / update / forget）
+        - 批量写入（batch）
+        - 知识图谱（三元组 / 多跳 BFS）
+        - 记忆归档（sleep）
+        - 噪声审计与清理（hygiene）
+        - 临时便签（scratchpad）
+        - 工具路由（_dispatch）
+        - MCP 传输（stdio / SSE）
+        - CLI
+        - 仓库级（文档 / CI / 构建 / 依赖）
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么
+      description: 期望的行为 vs 实际的行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 如何复现
+      description: 编号列出复现步骤，越具体越好。若与检索结果相关，请附上写入的记忆内容与查询词
+      placeholder: |
+        1. 创建客户端：MnemosyneClient(path="./test.db")
+        2. 写入：client.remember(content="用户偏好 Python", scope="global", importance=0.9)
+        3. 检索：client.recall("Python 偏好", limit=5)
+        4. 观察到 ……
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 错误日志或截图
+      description: 如有报错信息请原样贴出（注意先移除其中的记忆内容与个人路径）
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认
+      options:
+        - label: 我已确认该问题在最新版本上仍然存在
+          required: true
+        - label: 我已搜索过现有 Issue，没有找到相同问题
+          required: true
+        - label: 我已移除日志/截图中的敏感信息
+          required: false

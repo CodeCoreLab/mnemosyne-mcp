@@ -14,11 +14,12 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 try:
     from mcp.server import Server
     from mcp.server.stdio import stdio_server
-    from mcp.types import Tool, TextContent
+    from mcp.types import TextContent, Tool
     _MCP_AVAILABLE = True
 except ImportError:
     _MCP_AVAILABLE = False
@@ -55,7 +56,7 @@ class MemoryRecord:
 
     def __post_init__(self):
         if not self.created_at:
-            self.created_at = datetime.now().isoformat()
+            self.created_at = _now_iso()
         if not self.id:
             self.id = self.memory_id or _make_id()
 
@@ -77,6 +78,36 @@ def _make_id() -> str:
     return f"mem_{int(time.time()*1000)}_{id(object()):x}"
 
 
+def _now_iso() -> str:
+    """统一的当前时间戳（UTC，ISO 8601 带时区偏移）。
+
+    全部时间戳都必须走这个函数。此前代码里 `datetime.now().isoformat()`
+    （本地时间、无偏移）与 SQLite 默认值 `datetime('now')`（UTC、空格分隔）
+    混用，两种格式做**字符串比较**时结果不可靠 ——
+    时序过滤 `valid_from <= ?` 因此会静默给出错误结果。
+    统一成带时区的 ISO 后，字符串比较与 SQLite 的 datetime() 解析都成立。
+    """
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_ts(value: str | None, default: datetime) -> datetime:
+    """解析时间戳字符串，**永远返回 aware datetime**。
+
+    库里的历史数据可能是不带时区的 naive ISO（升级前的旧格式），
+    直接 `datetime.fromisoformat()` 会得到 naive 对象，
+    与 aware 的 now 相减会抛 TypeError。这里统一按 UTC 补齐时区。
+    """
+    if not value:
+        return default
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return default
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 _DEFAULT_SCHEMA = """\
 CREATE TABLE IF NOT EXISTS memories (
     id          TEXT PRIMARY KEY,
@@ -88,8 +119,8 @@ CREATE TABLE IF NOT EXISTS memories (
     valid_until TEXT DEFAULT '',
     source      TEXT DEFAULT 'user',
     metadata    TEXT DEFAULT '{}',
-    created_at  TEXT DEFAULT (datetime('now')),
-    updated_at  TEXT DEFAULT (datetime('now'))
+    created_at  TEXT DEFAULT '',
+    updated_at  TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS triples (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,7 +128,7 @@ CREATE TABLE IF NOT EXISTS triples (
     predicate   TEXT NOT NULL,
     object      TEXT NOT NULL,
     confidence  REAL DEFAULT 1.0,
-    valid_from  TEXT DEFAULT (datetime('now')),
+    valid_from  TEXT DEFAULT '',
     valid_until TEXT DEFAULT '',
     superseded  INTEGER DEFAULT 0
 );
@@ -160,7 +191,7 @@ class MnemosyneClient:
     ) -> str:
         """写入一条记忆，返回 memory_id。"""
         mem_id = _make_id()
-        now = datetime.now().isoformat()
+        now = _now_iso()
         with _get_conn(self.db_path) as c:
             c.execute(
                 "INSERT INTO memories (id, memory_id, content, memory_type, scope, "
@@ -175,6 +206,106 @@ class MnemosyneClient:
                 ),
             )
         return mem_id
+
+    def batch(self, operations: list[dict]) -> list[dict]:
+        """批量执行操作，**全有或全无**（单个事务）。
+
+        每个 operation 是 ``{"action": ..., ...参数}``，action 取值：
+          - ``remember``   —— 同 remember()
+          - ``triple_add`` —— 同 triple_add()
+          - ``graph_link`` —— 同 graph_link()
+          - ``update``     —— 同 update()
+          - ``forget``     —— 同 forget()
+
+        原子性：任一操作失败，**整批回滚**，不会留下半截数据。
+        这对"一次导入一批记忆"的场景很重要 —— 半截导入比完全失败更难收拾。
+
+        返回每条操作的结果列表，顺序与输入一致。
+        """
+        results: list[dict] = []
+        # 单个连接 + 单个事务：任一步抛异常都会回滚整批
+        with _get_conn(self.db_path) as c:
+            c.execute("BEGIN")
+            try:
+                for index, op in enumerate(operations):
+                    action = op.get("action", "")
+                    try:
+                        result = self._exec_one(c, action, op)
+                    except Exception as exc:
+                        raise ValueError(
+                            f"batch 第 {index + 1} 条操作失败（action={action!r}）: {exc}"
+                        ) from exc
+                    results.append(result)
+            except Exception:
+                c.rollback()
+                raise
+            c.commit()
+        return results
+
+    @staticmethod
+    def _exec_one(c: sqlite3.Connection, action: str, op: dict) -> dict:
+        """在既有连接/事务内执行单条操作（供 batch 使用）。"""
+        if action == "remember":
+            mem_id = _make_id()
+            now = _now_iso()
+            c.execute(
+                "INSERT INTO memories (id, memory_id, content, memory_type, scope, "
+                "importance, valid_until, source, metadata, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    mem_id, mem_id,
+                    op.get("content", ""),
+                    op.get("memory_type", "user"),
+                    op.get("scope", "session"),
+                    op.get("importance", 0.5),
+                    op.get("valid_until", ""),
+                    op.get("source", "user"),
+                    json.dumps(op.get("metadata") or {}, ensure_ascii=False),
+                    now, now,
+                ),
+            )
+            return {"memory_id": mem_id}
+        if action == "triple_add":
+            cur = c.execute(
+                "INSERT INTO triples (subject, predicate, object, confidence, valid_from, valid_until) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    op.get("subject", ""), op.get("predicate", ""), op.get("object", ""),
+                    op.get("confidence", 1.0), _now_iso(), op.get("valid_until", ""),
+                ),
+            )
+            return {"id": cur.lastrowid}
+        if action == "graph_link":
+            c.execute(
+                "INSERT OR REPLACE INTO graph_edges (source_id, target_id, relationship, weight) "
+                "VALUES (?,?,?,?)",
+                (
+                    op.get("source_id", ""), op.get("target_id", ""),
+                    op.get("relationship", ""), op.get("weight", 0.5),
+                ),
+            )
+            return {"success": True}
+        if action == "update":
+            allowed = {"content", "importance", "valid_until", "metadata", "scope"}
+            sets, vals = [], []
+            for k, v in op.items():
+                if k in ("action", "memory_id") or k not in allowed:
+                    continue
+                sets.append(f"{k}=?")
+                if k == "metadata" and isinstance(v, dict):
+                    v = json.dumps(v, ensure_ascii=False)
+                vals.append(v)
+            if not sets:
+                return {"success": False}
+            sets.append("updated_at=?")
+            vals.append(_now_iso())
+            vals.append(op.get("memory_id", ""))
+            cur = c.execute(f"UPDATE memories SET {','.join(sets)} WHERE memory_id=?", vals)
+            return {"success": cur.rowcount > 0}
+        if action == "forget":
+            cur = c.execute("DELETE FROM memories WHERE memory_id=?", (op.get("memory_id", ""),))
+            return {"success": cur.rowcount > 0}
+        raise ValueError(f"未知的 batch action: {action!r}")
 
     def recall(
         self,
@@ -203,7 +334,7 @@ class MnemosyneClient:
             rows = c.execute(sql, params).fetchall()
 
         results = []
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         doc_len_avg = 0.0
         if rows:
             doc_lens = [len((r["content"] or "").split()) for r in rows]
@@ -223,7 +354,7 @@ class MnemosyneClient:
                     idf = (doc_len_avg + 1) / (tf + 1)
                 score += idf * (tf * (1.5 + 1)) / (tf + 1.5 * (1 - 0.75 + 0.75 * doc_len / max(doc_len_avg, 1)))
             # 时间衰减
-            created = datetime.fromisoformat(d.get("created_at", now.isoformat()))
+            created = _parse_ts(d.get("created_at"), now)
             age_hours = (now - created).total_seconds() / 3600
             decay = 0.5 ** (age_hours / temporal_halflife)
             final = (vec_weight * 0.3 + fts_weight * score + importance_weight * d.get("importance", 0.5)) * (1 + temporal_weight * decay)
@@ -254,7 +385,7 @@ class MnemosyneClient:
         if not sets:
             return False
         sets.append("updated_at=?")
-        vals.append(datetime.now().isoformat())
+        vals.append(_now_iso())
         vals.append(memory_id)
         with _get_conn(self.db_path) as c:
             cur = c.execute(f"UPDATE memories SET {','.join(sets)} WHERE memory_id=?", vals)
@@ -282,8 +413,9 @@ class MnemosyneClient:
     ) -> int:
         with _get_conn(self.db_path) as c:
             cur = c.execute(
-                "INSERT INTO triples (subject, predicate, object, confidence, valid_until) VALUES (?,?,?,?,?)",
-                (subject, predicate, object_, confidence, valid_until),
+                "INSERT INTO triples (subject, predicate, object, confidence, valid_from, valid_until) "
+                "VALUES (?,?,?,?,?,?)",
+                (subject, predicate, object_, confidence, _now_iso(), valid_until),
             )
             return cur.lastrowid
 
@@ -297,24 +429,39 @@ class MnemosyneClient:
         sql = "SELECT * FROM triples WHERE superseded=0"
         params: list = []
         if subject:
-            sql += " AND subject=?"; params.append(subject)
+            sql += " AND subject=?"
+            params.append(subject)
         if predicate:
-            sql += " AND predicate=?"; params.append(predicate)
+            sql += " AND predicate=?"
+            params.append(predicate)
         if object_:
-            sql += " AND object=?"; params.append(object_)
+            sql += " AND object=?"
+            params.append(object_)
         if as_of:
-            sql += " AND (valid_from<=? OR valid_until='') AND (valid_until='' OR valid_until>=?)"
+            # 「该时刻有效」= 已经开始 且 尚未结束。
+            #   开始：valid_from <= as_of
+            #   未结束：valid_until 为空（永不过期）或 valid_until >= as_of
+            #
+            # 用 SQLite 的 datetime() 归一化后再比较 ——
+            # 直接对原始字符串做字典序比较，会因分隔符/时区格式不同而给出错误结果。
+            #
+            # 注意：此处**不能**让 valid_until='' 绕过 valid_from 检查 ——
+            # 「永不过期」指的是没有结束时间，不是「从宇宙开始就存在」。
+            # 否则查询过去时刻会返回「那时还没创建」的三元组。
+            sql += (" AND datetime(valid_from)<=datetime(?)"
+                    " AND (valid_until='' OR datetime(valid_until)>=datetime(?))")
             params.extend([as_of, as_of])
         with _get_conn(self.db_path) as c:
             return [dict(r) for r in c.execute(sql, params).fetchall()]
 
     def triple_end(self, subject: str, predicate: str, object_: str = "", valid_until: str = "") -> int:
-        valid = valid_until or datetime.now().isoformat()
+        valid = valid_until or _now_iso()
         with _get_conn(self.db_path) as c:
             sql = "UPDATE triples SET valid_until=?, superseded=1 WHERE subject=? AND predicate=?"
             params: list = [valid, subject, predicate]
             if object_:
-                sql += " AND object=?"; params.append(object_)
+                sql += " AND object=?"
+                params.append(object_)
             cur = c.execute(sql, params)
             return cur.rowcount
 
@@ -332,7 +479,10 @@ class MnemosyneClient:
                     (source_id, target_id, relationship, weight),
                 )
                 return True
-            except Exception:
+            except sqlite3.Error as exc:
+                # 关系写入失败（如外键/约束冲突）不能让调用方拿到一个
+                # "看起来成功" 的 False —— 记日志并如实返回失败。
+                logger.warning("graph_link 失败 (%s -> %s): %s", source_id, target_id, exc)
                 return False
 
     def graph_query(self, seed_id: str, max_hops: int = 2, min_weight: float = 0.0) -> list[dict]:
@@ -368,7 +518,12 @@ class MnemosyneClient:
     # ------------------------------------------------------------------
 
     def sleep(self, force: bool = False, dry_run: bool = False) -> dict:
-        """运行记忆 consolidate 周期（working → episodic 摘要）。"""
+        """运行记忆 consolidate 周期（working → episodic）。
+
+        当前实现做的是**归档**而非摘要：把低重要度的 session 记忆提升为
+        global/episodic。真正的内容摘要需要 LLM 接入，尚未实现 ——
+        不要把 scope 变更当成"内容已被压缩"。
+        """
         with _get_conn(self.db_path) as c:
             total = c.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
             by_type = dict(c.execute("SELECT memory_type, COUNT(*) FROM memories GROUP BY memory_type").fetchall())
@@ -376,26 +531,40 @@ class MnemosyneClient:
                 "SELECT COUNT(*) FROM memories WHERE datetime(created_at) < datetime('now', '-30 days')"
             ).fetchone()[0]
             session_count = c.execute("SELECT COUNT(*) FROM memories WHERE scope='session'").fetchone()[0]
+            # 真正会被 consolidate 的条数：session + 低重要性
+            eligible = c.execute(
+                "SELECT COUNT(*) FROM memories WHERE scope='session' AND importance < 0.3"
+            ).fetchone()[0]
+
+        consolidated = 0
         if not dry_run and (force or session_count > 100):
             with _get_conn(self.db_path) as c:
-                c.execute(
+                cur = c.execute(
                     "UPDATE memories SET scope='global', memory_type='episodic' "
                     "WHERE scope='session' AND importance < 0.3 AND id IN "
                     "(SELECT id FROM memories WHERE scope='session' AND importance < 0.3 LIMIT 50)"
                 )
+                consolidated = cur.rowcount
+
         return {
             "total": total,
             "by_type": by_type,
             "older_than_30d": old,
-            "session_consolidated": min(session_count, 50) if not dry_run else 0,
+            "session_count": session_count,
+            "eligible": eligible,
+            "session_consolidated": consolidated,
             "dry_run": dry_run,
-            "message": f"{'[DRY RUN] ' if dry_run else ''}consolidated: {min(session_count, 50) if not dry_run else old} memories processed",
+            "message": (
+                f"[DRY RUN] 将会 consolidate {min(eligible, 50)} 条记忆"
+                if dry_run
+                else f"consolidated: {consolidated} memories processed"
+            ),
         }
 
     def scratchpad_write(self, content: str) -> str:
         """写入临时便签（本会话级，不落库）。"""
         key = f"scratch_{int(time.time()*1000)}"
-        _SCRATCHPAD[key] = {"content": content, "ts": datetime.now().isoformat()}
+        _SCRATCHPAD[key] = {"content": content, "ts": _now_iso()}
         return key
 
     def scratchpad_read(self) -> dict:
@@ -751,8 +920,12 @@ _TOOL_DEFS: list[dict[str, Any]] = [
     },
 ]
 
+# 公开别名：工具定义列表（原先只有私有的 _TOOL_DEFS，
+# 但包级文档一直承诺导出 `TOOLS`）
+TOOLS = _TOOL_DEFS
 
-def create_server(db_path: str | Path | None = None) -> "Server":
+
+def create_server(db_path: str | Path | None = None) -> Server:
     """创建 Mnemosyne MCP Server 实例。"""
     if not _MCP_AVAILABLE:
         raise RuntimeError("mcp package not installed. Run: pip install mnemosyne-mcp")
@@ -770,7 +943,9 @@ def create_server(db_path: str | Path | None = None) -> "Server":
             result = _dispatch(client, name, arguments)
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, default=str))]
         except Exception as e:
-            logger.error("tool %s error: %s", name, e)
+            # 单个工具出错不能拖垮整个 MCP server —— 捕获后以 error 响应返回。
+            # 但必须留完整堆栈，否则出错时完全无从排查。
+            logger.exception("tool %s error", name)
             return [TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False))]
 
     return server
@@ -855,8 +1030,10 @@ def _dispatch(client: MnemosyneClient, name: str, args: dict) -> Any:
         candidates = args.get("candidates_json", "[]")
         try:
             cand_list = json.loads(candidates) if isinstance(candidates, str) else candidates
-        except Exception:
-            cand_list = []
+        except (json.JSONDecodeError, TypeError) as e:
+            # 解析失败不能静默返回空列表 —— 调用方会误以为"没有需要清理的"，
+            # 而真实原因是自己的 JSON 写错了。直接报错。
+            raise ValueError(f"candidates_json 不是合法 JSON: {e}") from e
         return client.hygiene_clean(
             cand_list,
             action=args.get("action", "keep"),
@@ -893,13 +1070,13 @@ async def _stdio_loop():
 
 async def _sse_loop(host: str, port: int):
     try:
+        import uvicorn
         from mcp.server.sse import SseServerTransport
         from starlette.applications import Starlette
-        from starlette.routing import Route
         from starlette.requests import Request
-        import uvicorn
+        from starlette.routing import Route
     except ImportError as e:
-        raise RuntimeError(f"SSE transport requires extra deps: {e}")
+        raise RuntimeError(f"SSE transport requires extra deps: {e}") from e
 
     _, token = _loopback_only()
     server = create_server()

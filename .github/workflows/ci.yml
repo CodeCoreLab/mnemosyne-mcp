@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -23,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]
+          pip install -e ".[dev]"
 
       - name: Run tests
         run: python -m pytest tests/ -v --tb=short
@@ -31,10 +32,38 @@ jobs:
       - name: Lint (ruff)
         run: ruff check src/ tests/
 
-  publish:
-    needs: test
+  # 冒烟：确认包能装上、CLI 能跑起来（原先的 client.py 模块已并入 core.py）
+  smoke:
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+
+      - name: CLI smoke test
+        run: |
+          mnemosyne-mcp --help
+          mnemosyne-mcp init --path /tmp/mnemosyne-smoke
+
+      - name: Import smoke test
+        run: python -c "from mnemosyne_mcp import MnemosyneClient, create_server"
+
+  # 发布到 PyPI：**手动触发**。
+  #
+  # 原因：PyPI 上的 "mnemosyne-mcp" 已被他人占用（castnettech/mnemosyne，
+  # 0.1.0 / 0.2.0），自动发布 job 会在 main 分支推送时尝试抢注同名包 ——
+  # 既会失败，也可能造成混淆。确需发布时，先在 PyPI 上确认包名可用，
+  # 或改用新的包名，再手动触发本 job。
+  publish:
+    needs: [test, smoke]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
     environment: pypi
 
     permissions:

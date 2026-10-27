@@ -1,7 +1,6 @@
 """mnemosyne-mcp 基础测试。"""
 
 import json
-import tempfile
 from pathlib import Path
 
 import pytest

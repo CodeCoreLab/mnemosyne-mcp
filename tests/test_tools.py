@@ -1,13 +1,11 @@
 """mnemosyne-mcp 工具路由测试（无需 MCP 依赖）。"""
 
 import json
-import tempfile
 from pathlib import Path
 
 import pytest
 
-from mnemosyne_mcp.core import MnemosyneClient
-from mnemosyne_mcp.core import _dispatch
+from mnemosyne_mcp.core import MnemosyneClient, _dispatch
 
 
 @pytest.fixture
@@ -41,15 +39,29 @@ class TestDispatch:
         assert "working_count" in result
 
     def test_hygiene_clean_tool(self, client: MnemosyneClient):
-        mid = client.remember("low importance", importance=0.1)
+        client.remember("low importance", importance=0.1)
         audited = client.hygiene_audit(limit=5)
-        import json
         result = _dispatch(client, "mnemosyne_hygiene_clean", {
             "candidates_json": json.dumps(audited),
             "action": "delete",
             "confirm": True,
         })
         assert result["status"] == "deleted"
+        # 必须真的删掉了东西 —— 只断言 status 的话，
+        # "删了 0 条" 也会返回 deleted，测试形同虚设
+        assert result["count"] >= 1
+        assert client.stats()["working_count"] == 0
+
+    def test_hygiene_clean_invalid_json_raises(self, client: MnemosyneClient):
+        """candidates_json 非法时必须报错，而不是静默返回空列表。"""
+        import pytest
+
+        with pytest.raises(ValueError, match="candidates_json"):
+            _dispatch(client, "mnemosyne_hygiene_clean", {
+                "candidates_json": "{not valid json",
+                "action": "delete",
+                "confirm": True,
+            })
 
     def test_unknown_tool(self, client: MnemosyneClient):
         result = _dispatch(client, "nonexistent_tool", {})
